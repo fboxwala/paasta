@@ -4,11 +4,14 @@ import mock
 
 from paasta_tools.deployd.common import exponential_back_off
 from paasta_tools.deployd.common import get_marathon_client_from_config
+from paasta_tools.deployd.common import get_priority
 from paasta_tools.deployd.common import get_service_instances_needing_update
+from paasta_tools.deployd.common import PaastaPriorityQueue
 from paasta_tools.deployd.common import PaastaQueue
 from paasta_tools.deployd.common import PaastaThread
 from paasta_tools.deployd.common import rate_limit_instances
 from paasta_tools.deployd.common import ServiceInstance
+from paasta_tools.deployd.common import ServiceInstanceTuple
 from paasta_tools.utils import DEFAULT_SOA_DIR
 from paasta_tools.utils import InvalidJobNameError
 from paasta_tools.utils import NoDeploymentsAvailable
@@ -38,27 +41,120 @@ class TestPaastaQueue(unittest.TestCase):
             mock_q.put.assert_called_with(self.queue, "human")
 
 
+class TestPaastaPriorityQueue(unittest.TestCase):
+    def setUp(self):
+        self.queue = PaastaPriorityQueue("AtThePostOffice")
+
+    def test_log(self):
+        self.queue.log.info("HAAAALP ME")
+
+    def test_put(self):
+        with mock.patch(
+            'paasta_tools.deployd.common.PriorityQueue', autospec=True,
+        ) as mock_q:
+            self.queue.put(3, "human")
+            mock_q.put.assert_called_with(self.queue, (3, 1, "human"))
+
+            self.queue.put(3, "human")
+            mock_q.put.assert_called_with(self.queue, (3, 2, "human"))
+
+    def test_get(self):
+        with mock.patch(
+            'paasta_tools.deployd.common.PriorityQueue', autospec=True,
+        ) as mock_q:
+            mock_q.get.return_value = (3, 2, "human")
+            assert self.queue.get() == "human"
+
+
+def test_ServiceInstance():
+    with mock.patch(
+        'paasta_tools.deployd.common.get_priority', autospec=True,
+    ) as mock_get_priority:
+        mock_get_priority.return_value = 1
+        expected = ServiceInstanceTuple(
+            service='universe',
+            instance='c137',
+            watcher='mywatcher',
+            bounce_by=0,
+            failures=0,
+            bounce_timers=None,
+            priority=1,
+        )
+        assert ServiceInstance(
+            service='universe',
+            instance='c137',
+            watcher='mywatcher',
+            cluster='westeros-prod',
+            bounce_by=0,
+        ) == expected
+
+        expected = ServiceInstanceTuple(
+            service='universe',
+            instance='c137',
+            watcher='mywatcher',
+            bounce_by=0,
+            failures=0,
+            bounce_timers=None,
+            priority=2,
+        )
+        assert ServiceInstance(
+            service='universe',
+            instance='c137',
+            watcher='mywatcher',
+            cluster='westeros-prod',
+            bounce_by=0,
+            priority=2,
+        ) == expected
+
+
+def test_get_priority():
+    with mock.patch(
+        'paasta_tools.deployd.common.load_marathon_service_config', autospec=True,
+    ) as mock_load_marathon_service_config:
+        mock_load_marathon_service_config.return_value = mock.Mock(get_bounce_priority=mock.Mock(return_value=1))
+        assert get_priority('universe', 'c137', 'westeros-prod') == 1
+        mock_load_marathon_service_config.assert_called_with(
+            service='universe',
+            instance='c137',
+            cluster='westeros-prod',
+            soa_dir='/nail/etc/services',
+        )
+
+        mock_load_marathon_service_config.side_effect = NoDockerImageError()
+        assert get_priority('universe', 'c137', 'westeros-prod') == 0
+
+        mock_load_marathon_service_config.side_effect = InvalidJobNameError()
+        assert get_priority('universe', 'c137', 'westeros-prod') == 0
+
+        mock_load_marathon_service_config.side_effect = NoDeploymentsAvailable()
+        assert get_priority('universe', 'c137', 'westeros-prod') == 0
+
+
 def test_rate_limit_instances():
     with mock.patch(
+        'paasta_tools.deployd.common.get_priority', autospec=True, return_value=0,
+    ), mock.patch(
         'time.time', autospec=True,
     ) as mock_time:
         mock_time.return_value = 1
         mock_si_1 = ('universe', 'c137')
         mock_si_2 = ('universe', 'c138')
-        ret = rate_limit_instances([mock_si_1, mock_si_2], 2, "Custos")
+        ret = rate_limit_instances([mock_si_1, mock_si_2], "westeros-prod", 2, "Custos")
         expected = [
-            ServiceInstance(
+            ServiceInstanceTuple(
                 service='universe',
                 instance='c137',
                 watcher='Custos',
+                priority=0,
                 bounce_by=1,
                 bounce_timers=None,
                 failures=0,
             ),
-            ServiceInstance(
+            ServiceInstanceTuple(
                 service='universe',
                 instance='c138',
                 watcher='Custos',
+                priority=0,
                 bounce_by=31,
                 bounce_timers=None,
                 failures=0,

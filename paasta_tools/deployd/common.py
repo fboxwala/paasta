@@ -1,6 +1,7 @@
 import logging
 import time
 from collections import namedtuple
+from queue import PriorityQueue
 from queue import Queue
 from threading import Thread
 
@@ -8,13 +9,14 @@ from paasta_tools.marathon_tools import DEFAULT_SOA_DIR
 from paasta_tools.marathon_tools import get_all_marathon_apps
 from paasta_tools.marathon_tools import get_marathon_client
 from paasta_tools.marathon_tools import load_marathon_config
+from paasta_tools.marathon_tools import load_marathon_service_config
 from paasta_tools.marathon_tools import load_marathon_service_config_no_cache
 from paasta_tools.utils import InvalidJobNameError
 from paasta_tools.utils import NoDeploymentsAvailable
 from paasta_tools.utils import NoDockerImageError
 
 BounceTimers = namedtuple('BounceTimers', ['processed_by_worker', 'setup_marathon', 'bounce_length'])
-ServiceInstance = namedtuple(
+ServiceInstanceTuple = namedtuple(
     'ServiceInstance', [
         'service',
         'instance',
@@ -22,8 +24,36 @@ ServiceInstance = namedtuple(
         'watcher',
         'bounce_timers',
         'failures',
+        'priority',
     ],
 )
+
+
+def ServiceInstance(service, instance, watcher, cluster, bounce_by, failures=0, bounce_timers=None, priority=None):
+    if priority is None:
+        priority = get_priority(service, instance, cluster)
+    return ServiceInstanceTuple(
+        service=service,
+        instance=instance,
+        watcher=watcher,
+        bounce_by=bounce_by,
+        failures=failures,
+        bounce_timers=bounce_timers,
+        priority=priority,
+    )
+
+
+def get_priority(service, instance, cluster):
+    try:
+        config = load_marathon_service_config(
+            service=service,
+            instance=instance,
+            cluster=cluster,
+            soa_dir=DEFAULT_SOA_DIR,
+        )
+    except (NoDockerImageError, InvalidJobNameError, NoDeploymentsAvailable) as e:
+        return 0
+    return config.get_bounce_priority()
 
 
 class PaastaThread(Thread):
@@ -50,7 +80,28 @@ class PaastaQueue(Queue):
         Queue.put(self, item, *args, **kwargs)
 
 
-def rate_limit_instances(instances, number_per_minute, watcher_name):
+class PaastaPriorityQueue(PriorityQueue):
+
+    def __init__(self, name, *args, **kwargs):
+        self.name = name
+        PriorityQueue.__init__(self, *args, **kwargs)
+        self.counter = 0
+
+    @property
+    def log(self):
+        name = '.'.join([self.__class__.__module__, self.__class__.__name__])
+        return logging.getLogger(name)
+
+    def put(self, priority, item, *args, **kwargs):
+        self.log.debug("Adding {} to {} queue with priority {}".format(item, self.name, priority))
+        self.counter += 1
+        PriorityQueue.put(self, (priority, self.counter, item), *args, **kwargs)
+
+    def get(self, *args, **kwargs):
+        return PriorityQueue.get(self, *args, **kwargs)[2]
+
+
+def rate_limit_instances(instances, cluster, number_per_minute, watcher_name):
     service_instances = []
     if not instances:
         return []
@@ -62,6 +113,7 @@ def rate_limit_instances(instances, number_per_minute, watcher_name):
             service=service,
             instance=instance,
             watcher=watcher_name,
+            cluster=cluster,
             bounce_by=bounce_time,
             bounce_timers=None,
             failures=0,

@@ -70,6 +70,7 @@ class AutoscalerWatcher(PaastaWatcher):
             service_instance = ServiceInstance(
                 service=service,
                 instance=instance,
+                cluster=self.config.get_cluster(),
                 bounce_by=int(time.time()),
                 bounce_timers=None,
                 watcher=self.__class__.__name__,
@@ -191,6 +192,7 @@ class MaintenanceWatcher(PaastaWatcher):
                 service_instances.append(ServiceInstance(
                     service=service,
                     instance=instance,
+                    cluster=self.config.get_cluster(),
                     bounce_by=int(time.time()),
                     watcher=self.__class__.__name__,
                     bounce_timers=None,
@@ -250,6 +252,7 @@ class PublicConfigEventHandler(pyinotify.ProcessEvent):
                 bounce_rate = self.public_config.get_deployd_big_bounce_rate()
                 service_instances = rate_limit_instances(
                     instances=service_instances,
+                    cluster=self.public_config.get_cluster(),
                     number_per_minute=bounce_rate,
                     watcher_name=self.__class__.__name__,
                 )
@@ -314,6 +317,7 @@ class YelpSoaEventHandler(pyinotify.ProcessEvent):
             ServiceInstance(
                 service=service,
                 instance=instance,
+                cluster=self.filewatcher.cluster,
                 bounce_by=int(time.time()),
                 watcher=self.__class__.__name__,
                 bounce_timers=None,

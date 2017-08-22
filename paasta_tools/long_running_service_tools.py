@@ -110,7 +110,7 @@ class LongRunningServiceConfig(InstanceConfig):
     def get_bounce_priority(self):
         """Gives a priority to each service instance which deployd will use to prioritise services
         higher numbers are higher priority"""
-        return self.config.get('bounce_priority', 0) * -1
+        return self.config_dict.get('bounce_priority', 0) * -1
 
     def get_instances(self):
         """Gets the number of instances for a service, ignoring whether the user has requested
